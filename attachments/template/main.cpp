@@ -48,6 +48,12 @@ class HelloTriangleApplication
 	vk::raii::PhysicalDevice physicalDevice = nullptr;
 	vk::raii::Device device = nullptr;
 	vk::raii::Queue graphicsQueue = nullptr;
+	vk::raii::SurfaceKHR surface = nullptr;
+	vk::raii::SwapchainKHR swapChain = nullptr;
+	std::vector<vk::Image> swapChainImages;
+	std::vector<vk::raii::ImageView> swapChainImageViews;
+	vk::SurfaceFormatKHR swapChainSurfaceFormat;
+	vk::Extent2D swapChainExtent;
 
 	void initWindow()
 	{
@@ -62,8 +68,122 @@ class HelloTriangleApplication
 	void initVulkan()
 	{
 		createInstance();
+		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
+		createSwapChain();
+		createImageViews();
+	}
+
+	void createImageViews()
+	{
+		assert(swapChainImageViews.empty());
+
+		vk::ImageViewCreateInfo imageViewCreateInfo{
+		    .viewType         = vk::ImageViewType::e2D,
+		    .format           = swapChainSurfaceFormat.format,
+		    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+
+		imageViewCreateInfo.subresourceRange = {
+		    .aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = 1, .layerCount = 1
+		};
+
+		for (auto &image : swapChainImages)
+		{
+			imageViewCreateInfo.image = image;
+			swapChainImageViews.emplace_back(device, imageViewCreateInfo);
+		}
+	}
+
+	void createSwapChain()
+	{
+		vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface);
+		swapChainExtent = chooseSwapExtent(surfaceCapabilities);
+		uint32_t minImageCount = chooseSwapMinImageCount(surfaceCapabilities);
+
+		std::vector<vk::SurfaceFormatKHR> availableFormats = physicalDevice.getSurfaceFormatsKHR(*surface);
+		swapChainSurfaceFormat = chooseSwapSurfaceFormat(availableFormats);
+
+		std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface);
+
+		vk::SwapchainCreateInfoKHR swapChainCreateInfo{
+		    .surface          = *surface,
+		    .minImageCount    = minImageCount,
+		    .imageFormat      = swapChainSurfaceFormat.format,
+		    .imageColorSpace  = swapChainSurfaceFormat.colorSpace,
+		    .imageExtent      = swapChainExtent,
+		    .imageArrayLayers = 1,
+		    .imageUsage       = vk::ImageUsageFlagBits::eColorAttachment,
+		    .imageSharingMode = vk::SharingMode::eExclusive,
+		    .preTransform     = surfaceCapabilities.currentTransform,
+		    .compositeAlpha   = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+		    .presentMode      = chooseSwapPresentMode(availablePresentModes),
+		    .clipped          = true
+		};
+
+		swapChain       = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
+		swapChainImages = swapChain.getImages();
+	}
+
+	vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
+	{
+		// if possible, select eMailbox
+		// else Fifo (supported by deafult)
+		assert(std::ranges::any_of(
+		    availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
+		return std::ranges::any_of(
+		           availablePresentModes,
+		           [](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
+		           vk::PresentModeKHR::eMailbox :
+		           vk::PresentModeKHR::eFifo;
+	}
+
+	vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
+	{
+		// currentExtent is only set to the special "undefined" value described above
+		// when the window manager lets us choose the extent ourselves; any other value
+		// means the surface already dictates a fixed extent that we must use as-is.
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
+		{
+			return capabilities.currentExtent;
+		}
+		int width, height;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		return {
+		    std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+		    std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
+	}
+
+	uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
+	{
+		auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount);
+		if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
+		{
+			minImageCount = surfaceCapabilities.maxImageCount;
+		}
+		return minImageCount;
+	}
+
+	vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &availableFormats)
+	{
+		// we want format = 8-bit sRGBA and colorSpace = non-linear sRGB
+		// if it's not supported - pick the first one that is
+		const auto formatIt = std::ranges::find_if(availableFormats, [](const auto &format) {
+			return format.format == vk::Format::eB8G8R8A8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
+		});
+		return formatIt != availableFormats.end() ? *formatIt : availableFormats[0];
+	}
+
+	void createSurface()
+	{
+		VkSurfaceKHR _surface;
+		// the surfaceCreateInfo is not needed because glfwCreateWindowSurface() does it for us
+		if (glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0)
+		{
+			throw std::runtime_error("failed to create window surface!");
+		}
+		surface = vk::raii::SurfaceKHR(instance, _surface);
 	}
 
 	void createLogicalDevice()
@@ -77,6 +197,8 @@ class HelloTriangleApplication
 		});
 
 		// Get the index of the graphics queue family
+		// Might be better to find an index of a queue family that supports both graphics and presentation, but for now
+		// we will just use the graphics queue family, as it will most likely support presentation as well
 		auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
 
 		// we don't need to check whether the device supports the required extensions because we already did that in
